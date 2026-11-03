@@ -22,6 +22,17 @@ ControllerDefaultMappings::ControllerDefaultMappings(
     SetDefaultKeyboardKeyToButtonMappings(defaultKeyboardKeyToButtonMappings);
     SetDefaultSDLButtonToButtonMappings(defaultSDLButtonToButtonMappings);
     SetDefaultSDLAxisDirectionToButtonMappings(defaultSDLAxisDirectionToButtonMappings);
+#ifdef LUS_DPAD_AS_STICK
+    // Handhelds without an analog stick: the d-pad drives the N64 stick
+    if (defaultSDLButtonToAxisDirectionMappings.empty()) {
+        Ship::ControllerDefaultMappings::SetDefaultSDLButtonToAxisDirectionMappings(
+            { { Ship::LEFT_STICK,
+                { { Ship::LEFT, SDL_CONTROLLER_BUTTON_DPAD_LEFT },
+                  { Ship::RIGHT, SDL_CONTROLLER_BUTTON_DPAD_RIGHT },
+                  { Ship::UP, SDL_CONTROLLER_BUTTON_DPAD_UP },
+                  { Ship::DOWN, SDL_CONTROLLER_BUTTON_DPAD_DOWN } } } });
+    }
+#endif
 }
 
 ControllerDefaultMappings::ControllerDefaultMappings()
@@ -71,6 +82,20 @@ void ControllerDefaultMappings::SetDefaultSDLButtonToButtonMappings(
         return;
     }
 
+#ifdef LUS_DPAD_AS_STICK
+    // The d-pad is the stick (see the constructor); L1/R1 = Z/R, face buttons and L2/R2 = C buttons,
+    // select = L
+    Ship::ControllerDefaultMappings::SetDefaultSDLButtonToButtonMappings({
+        { BTN_A, { SDL_CONTROLLER_BUTTON_A } },
+        { BTN_B, { SDL_CONTROLLER_BUTTON_B } },
+        { BTN_Z, { SDL_CONTROLLER_BUTTON_LEFTSHOULDER } },
+        { BTN_R, { SDL_CONTROLLER_BUTTON_RIGHTSHOULDER } },
+        { BTN_L, { SDL_CONTROLLER_BUTTON_BACK } },
+        { BTN_START, { SDL_CONTROLLER_BUTTON_START } },
+        { BTN_CLEFT, { SDL_CONTROLLER_BUTTON_Y } },
+        { BTN_CDOWN, { SDL_CONTROLLER_BUTTON_X } },
+    });
+#else
     Ship::ControllerDefaultMappings::SetDefaultSDLButtonToButtonMappings({
         { BTN_A, { SDL_CONTROLLER_BUTTON_A } },
         { BTN_B, { SDL_CONTROLLER_BUTTON_B } },
@@ -81,6 +106,7 @@ void ControllerDefaultMappings::SetDefaultSDLButtonToButtonMappings(
         { BTN_DLEFT, { SDL_CONTROLLER_BUTTON_DPAD_LEFT } },
         { BTN_DRIGHT, { SDL_CONTROLLER_BUTTON_DPAD_RIGHT } },
     });
+#endif
 }
 
 void ControllerDefaultMappings::SetDefaultSDLAxisDirectionToButtonMappings(
@@ -92,6 +118,14 @@ void ControllerDefaultMappings::SetDefaultSDLAxisDirectionToButtonMappings(
         return;
     }
 
+#ifdef LUS_DPAD_AS_STICK
+    // L2/R2 report as trigger axes
+    Ship::ControllerDefaultMappings::SetDefaultSDLAxisDirectionToButtonMappings({
+        { BTN_CUP, { { SDL_CONTROLLER_AXIS_TRIGGERLEFT, 1 } } },
+        { BTN_CRIGHT, { { SDL_CONTROLLER_AXIS_TRIGGERRIGHT, 1 } } },
+    });
+    return;
+#endif
     Ship::ControllerDefaultMappings::SetDefaultSDLAxisDirectionToButtonMappings({
         { BTN_R, { { SDL_CONTROLLER_AXIS_TRIGGERRIGHT, 1 } } },
         { BTN_Z, { { SDL_CONTROLLER_AXIS_TRIGGERLEFT, 1 } } },
