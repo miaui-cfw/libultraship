@@ -5,6 +5,11 @@
 @if(VERTEX_SHADER)
     @{attr} vec4 aVtxPos;
 
+    @if(gles2 && o_prim_depth)
+    // GLSL ES 1.00 has no gl_FragDepth: primitive depth is applied per vertex instead
+    uniform float prim_depth;
+    @end
+
     @for(i in 0..2)
         @if(o_textures[i])
             @{attr} vec2 aTexCoord@{i};
@@ -77,6 +82,12 @@
         @if(opengles)
             gl_Position.z *= 0.3f;
         @end
+        @if(gles2)
+            gl_Position.z *= 0.3;
+            @if(o_prim_depth)
+                gl_Position.z = (2.0 * prim_depth - 1.0) * gl_Position.w;
+            @end
+        @end
     }
 @else
     @if(core_opengl || opengles)
@@ -133,12 +144,12 @@
     #define WRAP(x, low, high) mod((x)-(low), (high)-(low)) + (low)
 
     float random(in vec3 value) {
-        float random = dot(sin(value), vec3(12.9898, 78.233, 37.719));
-        return fract(sin(random) * 143758.5453);
+        float r = dot(sin(value), vec3(12.9898, 78.233, 37.719));
+        return fract(sin(r) * 143758.5453);
     }
 
     vec4 fromLinear(vec4 linearRGB){
-        bvec3 cutoff = lessThan(linearRGB.rgb, vec3(0.0031308));
+        vec3 cutoff = vec3(lessThan(linearRGB.rgb, vec3(0.0031308)));
         vec3 higher = vec3(1.055)*pow(linearRGB.rgb, vec3(1.0/2.4)) - vec3(0.055);
         vec3 lower = linearRGB.rgb * vec3(12.92);
         return vec4(mix(higher, lower, cutoff), linearRGB.a);
@@ -153,9 +164,10 @@
         return c0 + abs(offset.x)*(c1-c0) + abs(offset.y)*(c2-c0);
     }
 
-    vec4 hookTexture2D(in int id, sampler2D tex, in vec2 uv, in vec2 texSize) {
+    // Takes the filter value rather than an index: GLSL ES 1.00 fragment shaders only index uniform arrays with constants
+    vec4 hookTexture2D(in int filt, sampler2D tex, in vec2 uv, in vec2 texSize) {
     @if(o_three_point_filtering)
-        if(texture_filtering[id] == @{FILTER_THREE_POINT}) {
+        if(filt == @{FILTER_THREE_POINT}) {
             return filter3point(tex, uv, texSize);
         }
     @end
@@ -184,19 +196,21 @@
                     @end
                 @end
 
-                vec4 texVal@{i} = hookTexture2D(@{i}, uTex@{i}, vTexCoordAdj@{i}, texSize@{i});
+                vec4 texVal@{i} = hookTexture2D(texture_filtering[@{i}], uTex@{i}, vTexCoordAdj@{i}, texSize@{i});
 
                 @if(o_masks[i])
-                    @if(opengles) 
+                    @if(gles2)
+                        vec2 maskSize@{i} = texSize@{i};
+                    @elseif(opengles)
                         vec2 maskSize@{i} = vec2(textureSize(uTexMask@{i}, 0));
                     @else 
                         vec2 maskSize@{i} = textureSize(uTexMask@{i}, 0);
                     @end
 
-                    vec4 maskVal@{i} = hookTexture2D(@{i}, uTexMask@{i}, vTexCoordAdj@{i}, maskSize@{i});
+                    vec4 maskVal@{i} = hookTexture2D(texture_filtering[@{i}], uTexMask@{i}, vTexCoordAdj@{i}, maskSize@{i});
 
                     @if(o_blend[i])
-                        vec4 blendVal@{i} = hookTexture2D(@{i}, uTexBlend@{i}, vTexCoordAdj@{i}, texSize@{i});
+                        vec4 blendVal@{i} = hookTexture2D(texture_filtering[@{i}], uTexBlend@{i}, vTexCoordAdj@{i}, texSize@{i});
                     @else
                         vec4 blendVal@{i} = vec4(0, 0, 0, 0);
                     @end
@@ -290,7 +304,7 @@
             @{vOutColor} = fromLinear(@{vOutColor});
         @end
 
-        @if(o_prim_depth)
+        @if(o_prim_depth && !gles2)
             gl_FragDepth = prim_depth;
         @end
     }

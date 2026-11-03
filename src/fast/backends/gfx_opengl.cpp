@@ -27,6 +27,25 @@
 #include "fast/interpreter.h"
 #include "ship/config/ConsoleVariable.h"
 
+#ifdef USE_GLES2
+// GLES2 has no sized internal formats and no combined depth/stencil attachment point
+#define GL_DEPTH24_STENCIL8 GL_DEPTH24_STENCIL8_OES
+#define GL_TEX_RGBA GL_RGBA
+#define GL_TEX_RGB GL_RGB
+#else
+#define GL_TEX_RGBA GL_RGBA8
+#define GL_TEX_RGB GL_RGB8
+#endif
+
+static void AttachDepthStencil(GLuint rb) {
+#ifdef USE_GLES2
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, rb);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_RENDERBUFFER, rb);
+#else
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, rb);
+#endif
+}
+
 namespace Fast {
 int GfxRenderingAPIOGL::GetMaxTextureSize() {
     GLint max_texture_size;
@@ -284,13 +303,24 @@ std::string GfxRenderingAPIOGL::BuildFsShader(const CCFeatures& cc_features) {
         { "GLSL_VERSION", "#version 410 core" },
         { "attr", "in" },
         { "opengles", false },
+        { "gles2", false },
         { "core_opengl", true },
         { "texture", "texture" },
         { "vOutColor", "vOutColor" },
+#elif defined(USE_GLES2)
+        { "GLSL_VERSION", "#version 100\n#ifdef GL_FRAGMENT_PRECISION_HIGH\nprecision highp float;\n#else\nprecision "
+                          "mediump float;\n#endif" },
+        { "attr", "varying" },
+        { "opengles", false },
+        { "gles2", true },
+        { "core_opengl", false },
+        { "texture", "texture2D" },
+        { "vOutColor", "gl_FragColor" },
 #elif defined(USE_OPENGLES)
         { "GLSL_VERSION", "#version 300 es\nprecision mediump float;" },
         { "attr", "in" },
         { "opengles", true },
+        { "gles2", false },
         { "core_opengl", false },
         { "texture", "texture" },
         { "vOutColor", "vOutColor" },
@@ -298,6 +328,7 @@ std::string GfxRenderingAPIOGL::BuildFsShader(const CCFeatures& cc_features) {
         { "GLSL_VERSION", "#version 130" },
         { "attr", "varying" },
         { "opengles", false },
+        { "gles2", false },
         { "core_opengl", false },
         { "texture", "texture2D" },
         { "vOutColor", "gl_FragColor" },
@@ -351,21 +382,31 @@ static std::string BuildVsShader(const CCFeatures& cc_features) {
                                      { "o_alpha", cc_features.opt_alpha },
                                      { "o_inputs", cc_features.numInputs },
                                      { "update_floats", (InvokeFunc)UpdateFloats },
+                                     { "o_prim_depth", cc_features.opt_prim_depth },
 #ifdef __APPLE__
                                      { "GLSL_VERSION", "#version 410 core" },
                                      { "attr", "in" },
                                      { "out", "out" },
-                                     { "opengles", false }
+                                     { "opengles", false },
+                                     { "gles2", false }
+#elif defined(USE_GLES2)
+                                     { "GLSL_VERSION", "#version 100" },
+                                     { "attr", "attribute" },
+                                     { "out", "varying" },
+                                     { "opengles", false },
+                                     { "gles2", true }
 #elif defined(USE_OPENGLES)
                                      { "GLSL_VERSION", "#version 300 es" },
                                      { "attr", "in" },
                                      { "out", "out" },
-                                     { "opengles", true }
+                                     { "opengles", true },
+                                     { "gles2", false }
 #else
                                      { "GLSL_VERSION", "#version 110" },
                                      { "attr", "attribute" },
                                      { "out", "varying" },
-                                     { "opengles", false }
+                                     { "opengles", false },
+                                     { "gles2", false }
 #endif
     };
     processor.populate(mContext);
@@ -553,12 +594,13 @@ void GfxRenderingAPIOGL::ShaderGetInfo(struct ShaderProgram* prg, uint8_t* numIn
 GLuint GfxRenderingAPIOGL::NewTexture() {
     GLuint ret;
     glGenTextures(1, &ret);
-    textures.resize(std::max(textures.size(), (size_t)ret + 1));
+    textures[ret] = {};
     return ret;
 }
 
 void GfxRenderingAPIOGL::DeleteTexture(uint32_t texID) {
     glDeleteTextures(1, &texID);
+    textures.erase(texID);
 }
 
 void GfxRenderingAPIOGL::SelectTexture(int tile, GLuint texture_id) {
@@ -578,13 +620,13 @@ void GfxRenderingAPIOGL::UploadTexture(const uint8_t* rgba32_buf, uint32_t width
     if (width == 0 || height == 0) {
         return;
     }
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba32_buf);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_TEX_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba32_buf);
     textures[mCurrentTextureIds[mCurrentTile]].width = width;
     textures[mCurrentTextureIds[mCurrentTile]].height = height;
 }
 
 #ifdef USE_OPENGLES
-#define GL_MIRROR_CLAMP_TO_EDGE 0x8743
+#define GL_MIRROR_CLAMP_TO_EDGE GL_MIRRORED_REPEAT
 #endif
 
 static uint32_t gfx_cm_to_opengl(uint32_t val) {
@@ -715,7 +757,7 @@ void GfxRenderingAPIOGL::Init() {
     glGenBuffers(1, &mOpenglVbo);
     glBindBuffer(GL_ARRAY_BUFFER, mOpenglVbo);
 
-#if defined(__APPLE__) || defined(USE_OPENGLES)
+#if defined(__APPLE__) || (defined(USE_OPENGLES) && !defined(USE_GLES2))
     glGenVertexArrays(1, &mOpenglVao);
     glBindVertexArray(mOpenglVao);
 #endif
@@ -735,12 +777,16 @@ void GfxRenderingAPIOGL::Init() {
 
     glGenFramebuffers(1, &mPixelDepthFb);
     glBindFramebuffer(GL_FRAMEBUFFER, mPixelDepthFb);
-    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, mPixelDepthRb);
+    AttachDepthStencil(mPixelDepthRb);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
     mPixelDepthRbSize = 1;
 
+#ifdef USE_GLES2
+    mMaxMsaaLevel = 1; // no multisampled renderbuffers or blits to resolve them
+#else
     glGetIntegerv(GL_MAX_SAMPLES, &mMaxMsaaLevel);
+#endif
 }
 
 void GfxRenderingAPIOGL::OnResize() {
@@ -761,9 +807,11 @@ int GfxRenderingAPIOGL::CreateFramebuffer() {
     GLuint clrbuf;
     glGenTextures(1, &clrbuf);
     glBindTexture(GL_TEXTURE_2D, clrbuf);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, 1, 1, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_TEX_RGB, 1, 1, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glBindTexture(GL_TEXTURE_2D, 0);
 
     GLuint clrbufMsaa;
@@ -804,14 +852,16 @@ void GfxRenderingAPIOGL::UpdateFramebufferParameters(int fb_id, uint32_t width, 
         if (fb.width != width || fb.height != height || fb.msaa_level != msaa_level) {
             if (msaa_level <= 1) {
                 glBindTexture(GL_TEXTURE_2D, fb.clrbuf);
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_TEX_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
                 glBindTexture(GL_TEXTURE_2D, 0);
                 glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fb.clrbuf, 0);
             } else {
+#ifndef USE_GLES2
                 glBindRenderbuffer(GL_RENDERBUFFER, fb.clrbufMsaa);
                 glRenderbufferStorageMultisample(GL_RENDERBUFFER, msaa_level, GL_RGB8, width, height);
                 glBindRenderbuffer(GL_RENDERBUFFER, 0);
                 glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, fb.clrbufMsaa);
+#endif
             }
         }
 
@@ -821,15 +871,17 @@ void GfxRenderingAPIOGL::UpdateFramebufferParameters(int fb_id, uint32_t width, 
             if (msaa_level <= 1) {
                 glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, width, height);
             } else {
+#ifndef USE_GLES2
                 glRenderbufferStorageMultisample(GL_RENDERBUFFER, msaa_level, GL_DEPTH24_STENCIL8, width, height);
+#endif
             }
             glBindRenderbuffer(GL_RENDERBUFFER, 0);
         }
 
         if (!fb.has_depth_buffer && has_depth_buffer) {
-            glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, fb.rbo);
+            AttachDepthStencil(fb.rbo);
         } else if (fb.has_depth_buffer && !has_depth_buffer) {
-            glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, 0);
+            AttachDepthStencil(0);
         }
     }
 
@@ -885,6 +937,9 @@ void GfxRenderingAPIOGL::ClearDepthRegion(int x, int y, int w, int h) {
 }
 
 void GfxRenderingAPIOGL::ResolveMSAAColorBuffer(int fb_id_target, int fb_id_source) {
+#ifdef USE_GLES2
+    // MSAA is clamped to 1 on GLES2, so there is never anything to resolve
+#else
     FramebufferOGL& fb_dst = mFrameBuffers[fb_id_target];
     FramebufferOGL& fb_src = mFrameBuffers[fb_id_source];
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fb_dst.fbo);
@@ -904,6 +959,7 @@ void GfxRenderingAPIOGL::ResolveMSAAColorBuffer(int fb_id_target, int fb_id_sour
         mLastScissorEnabled = 1;
         glEnable(GL_SCISSOR_TEST);
     }
+#endif
 }
 
 void* GfxRenderingAPIOGL::GetFramebufferTextureId(int fb_id) {
@@ -914,17 +970,156 @@ void GfxRenderingAPIOGL::SelectTextureFb(int fb_id) {
     // glDisable(GL_DEPTH_TEST);
     int tile = 0;
     GLuint texId = mFrameBuffers[fb_id].clrbuf;
-    // Ensure the textures metadata vector can hold this FB texture handle.
-    // FB color buffers are created outside NewTexture(), so the vector may
-    // not have been resized for them yet.
-    if (texId >= textures.size()) {
-        textures.resize((size_t)texId + 1);
-    }
+    // FB color buffers are created outside NewTexture(); operator[] adds their metadata entry on first use.
     SelectTexture(tile, texId);
 }
 
+#ifdef USE_GLES2
+static GLuint CompileBlitShader(GLenum type, const char* src) {
+    GLuint sh = glCreateShader(type);
+    glShaderSource(sh, 1, &src, nullptr);
+    glCompileShader(sh);
+    GLint ok = 0;
+    glGetShaderiv(sh, GL_COMPILE_STATUS, &ok);
+    if (!ok) {
+        char log[1024];
+        glGetShaderInfoLog(sh, sizeof(log), nullptr, log);
+        SPDLOG_ERROR("Blit shader compilation failed: {}", log);
+    }
+    return sh;
+}
+
+void GfxRenderingAPIOGL::BlitTexture(GLuint srcTex, uint32_t srcW, uint32_t srcH, int srcX0, int srcY0, int srcX1,
+                                     int srcY1, GLuint dstFbo, uint32_t dstW, uint32_t dstH, int dstX0, int dstY0,
+                                     int dstX1, int dstY1) {
+    if (mBlitProgram == 0) {
+        static const char* vs = "attribute vec2 aPos;\n"
+                                "attribute vec2 aUv;\n"
+                                "varying vec2 vUv;\n"
+                                "void main() { vUv = aUv; gl_Position = vec4(aPos, 0.0, 1.0); }\n";
+        static const char* fs = "precision mediump float;\n"
+                                "varying vec2 vUv;\n"
+                                "uniform sampler2D uTex;\n"
+                                "void main() { gl_FragColor = texture2D(uTex, vUv); }\n";
+        mBlitProgram = glCreateProgram();
+        glAttachShader(mBlitProgram, CompileBlitShader(GL_VERTEX_SHADER, vs));
+        glAttachShader(mBlitProgram, CompileBlitShader(GL_FRAGMENT_SHADER, fs));
+        glBindAttribLocation(mBlitProgram, 0, "aPos");
+        glBindAttribLocation(mBlitProgram, 1, "aUv");
+        glLinkProgram(mBlitProgram);
+        mBlitTexLocation = glGetUniformLocation(mBlitProgram, "uTex");
+    }
+
+    // Map both rectangles: positions to NDC of the destination, texcoords to the source texture
+    auto nx = [&](int x) { return 2.0f * x / dstW - 1.0f; };
+    auto ny = [&](int y) { return 2.0f * y / dstH - 1.0f; };
+    auto u = [&](int x) { return (float)x / srcW; };
+    auto v = [&](int y) { return (float)y / srcH; };
+    const float quad[16] = {
+        nx(dstX0), ny(dstY0), u(srcX0), v(srcY0), nx(dstX1), ny(dstY0), u(srcX1), v(srcY0),
+        nx(dstX0), ny(dstY1), u(srcX0), v(srcY1), nx(dstX1), ny(dstY1), u(srcX1), v(srcY1),
+    };
+
+    // The game shader's attribute arrays must not stay enabled while drawing with ours
+    ShaderProgram* prg = mLastLoadedShader;
+    if (prg != nullptr) {
+        for (int i = 0; i < prg->numAttribs; i++) {
+            if (prg->attribLocations[i] >= 0) {
+                glDisableVertexAttribArray(prg->attribLocations[i]);
+            }
+        }
+    }
+
+    GLint viewport[4];
+    glGetIntegerv(GL_VIEWPORT, viewport);
+    const GLboolean depthTest = glIsEnabled(GL_DEPTH_TEST);
+    const GLboolean blend = glIsEnabled(GL_BLEND);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, dstFbo);
+    glViewport(0, 0, dstW, dstH);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_BLEND);
+    glUseProgram(mBlitProgram);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, srcTex);
+    glUniform1i(mBlitTexLocation, 0);
+    glBindBuffer(GL_ARRAY_BUFFER, mOpenglVbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(quad), quad, GL_STREAM_DRAW);
+    glEnableVertexAttribArray(0);
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glDisableVertexAttribArray(0);
+    glDisableVertexAttribArray(1);
+
+    // Restore everything the interpreter caches
+    glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
+    if (depthTest) {
+        glEnable(GL_DEPTH_TEST);
+    }
+    if (blend) {
+        glEnable(GL_BLEND);
+    }
+    glBindTexture(GL_TEXTURE_2D, mLastBoundTextures[0]);
+    if (mLastActiveTexture > 0) {
+        glActiveTexture(GL_TEXTURE0 + mLastActiveTexture);
+    }
+    if (prg != nullptr) {
+        glUseProgram(prg->openglProgramId);
+        VertexArraySetAttribs(prg);
+    }
+}
+#endif
+
 void GfxRenderingAPIOGL::CopyFramebuffer(int fb_dst_id, int fb_src_id, int srcX0, int srcY0, int srcX1, int srcY1,
                                          int dstX0, int dstY0, int dstX1, int dstY1) {
+#ifdef USE_GLES2
+    if (fb_dst_id >= (int)mFrameBuffers.size() || fb_src_id >= (int)mFrameBuffers.size() || fb_dst_id == fb_src_id) {
+        return;
+    }
+
+    const FramebufferOGL& src = mFrameBuffers[fb_src_id];
+    const FramebufferOGL& dst = mFrameBuffers[fb_dst_id];
+
+    // Same coordinate fixups as the blit path: opengl uses bottom left for origin
+    if (!src.invertY) {
+        int temp = srcY1 - srcY0;
+        srcY1 = src.height - srcY0;
+        srcY0 = srcY1 - temp;
+    }
+    if (src.invertY != dst.invertY) {
+        std::swap(srcY0, srcY1);
+    }
+
+    if (mLastScissorEnabled != 0) {
+        mLastScissorEnabled = 0;
+        glDisable(GL_SCISSOR_TEST);
+    }
+
+    if (fb_src_id == 0) {
+        // The window has no texture to sample: only an unscaled copy into the destination texture is possible
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, dst.clrbuf);
+        glCopyTexSubImage2D(GL_TEXTURE_2D, 0, std::min(dstX0, dstX1), std::min(dstY0, dstY1), std::min(srcX0, srcX1),
+                            std::min(srcY0, srcY1), std::abs(srcX1 - srcX0), std::abs(srcY1 - srcY0));
+        glBindTexture(GL_TEXTURE_2D, mLastBoundTextures[0]);
+        if (mLastActiveTexture > 0) {
+            glActiveTexture(GL_TEXTURE0 + mLastActiveTexture);
+        }
+    } else {
+        BlitTexture(src.clrbuf, src.width, src.height, srcX0, srcY0, srcX1, srcY1, dst.fbo, dst.width, dst.height,
+                    dstX0, dstY0, dstX1, dstY1);
+    }
+
+    glBindFramebuffer(GL_FRAMEBUFFER, mFrameBuffers[mCurrentFrameBuffer].fbo);
+
+    if (mLastScissorEnabled != 1) {
+        mLastScissorEnabled = 1;
+        glEnable(GL_SCISSOR_TEST);
+    }
+#else
     if (fb_dst_id >= (int)mFrameBuffers.size() || fb_src_id >= (int)mFrameBuffers.size()) {
         return;
     }
@@ -993,6 +1188,7 @@ void GfxRenderingAPIOGL::CopyFramebuffer(int fb_dst_id, int fb_src_id, int srcX0
         mLastScissorEnabled = 1;
         glEnable(GL_SCISSOR_TEST);
     }
+#endif
 }
 
 void GfxRenderingAPIOGL::ReadFramebufferToCPU(int fb_id, uint32_t width, uint32_t height, uint16_t* rgba16_buf) {
@@ -1022,6 +1218,14 @@ void GfxRenderingAPIOGL::ReadFramebufferToCPU(int fb_id, uint32_t width, uint32_
 
 std::unordered_map<std::pair<float, float>, uint16_t, hash_pair_ff>
 GfxRenderingAPIOGL::GetPixelDepth(int fb_id, const std::set<std::pair<float, float>>& coordinates) {
+#ifdef USE_GLES2
+    // GLES2 can neither read nor blit depth. Report the far plane, so depth-tested effects (lens flare) stay visible.
+    std::unordered_map<std::pair<float, float>, uint16_t, hash_pair_ff> res;
+    for (const auto& coord : coordinates) {
+        res.emplace(coord, 0xFFFC);
+    }
+    return res;
+#else
     std::unordered_map<std::pair<float, float>, uint16_t, hash_pair_ff> res;
 
     FramebufferOGL& fb = mFrameBuffers[fb_id];
@@ -1087,6 +1291,7 @@ GfxRenderingAPIOGL::GetPixelDepth(int fb_id, const std::set<std::pair<float, flo
     glBindFramebuffer(GL_FRAMEBUFFER, mCurrentFrameBuffer);
 
     return res;
+#endif
 }
 
 void GfxRenderingAPIOGL::SetTextureFilter(FilteringMode mode) {

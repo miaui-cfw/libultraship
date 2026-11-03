@@ -345,6 +345,12 @@ void GfxWindowBackendSDL2::Init(const char* gameName, const char* gfxApiName, bo
         SDL_SetHint(SDL_HINT_RENDER_DRIVER, "metal");
     }
 
+#if defined(USE_GLES2)
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+#endif
+
 #if defined(__APPLE__)
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_FORWARD_COMPATIBLE_FLAG); // Always required on Mac
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
@@ -386,6 +392,10 @@ void GfxWindowBackendSDL2::Init(const char* gameName, const char* gfxApiName, bo
     }
 
     mWnd = SDL_CreateWindow(title, posX, posY, mWindowWidth, mWindowHeight, flags);
+    if (mWnd == nullptr) {
+        SPDLOG_ERROR("SDL_CreateWindow({}x{} at {},{}) failed: {}", mWindowWidth, mWindowHeight, posX, posY,
+                     SDL_GetError());
+    }
 #ifdef _WIN32
     // Get Windows window handle and use it to subclass the window procedure.
     // Needed to circumvent SDLs DPI scaling problems under windows (original does only scale *sometimes*).
@@ -412,8 +422,14 @@ void GfxWindowBackendSDL2::Init(const char* gameName, const char* gfxApiName, bo
         }
 
         mCtx = SDL_GL_CreateContext(mWnd);
+        if (mCtx == nullptr) {
+            SPDLOG_ERROR("SDL_GL_CreateContext failed: {}", SDL_GetError());
+        }
 
         SDL_GL_MakeCurrent(mWnd, mCtx);
+        SPDLOG_INFO("SDL video driver {}, GL {} / {} / GLSL {}", SDL_GetCurrentVideoDriver(),
+                    (const char*)glGetString(GL_VERSION), (const char*)glGetString(GL_RENDERER),
+                    (const char*)glGetString(GL_SHADING_LANGUAGE_VERSION));
         SDL_GL_SetSwapInterval(mVsyncEnabled ? 1 : 0);
 
         window_impl.Opengl = { mWnd, mCtx };
@@ -525,6 +541,15 @@ void GfxWindowBackendSDL2::SetMouseCallbacks(bool (*onMouseButtonDown)(int btn),
 }
 
 void GfxWindowBackendSDL2::GetDimensions(uint32_t* width, uint32_t* height, int32_t* posX, int32_t* posY) {
+    if (mWnd == nullptr) {
+        // No window yet (e.g. the config is saved before Init): the SDL getters would fail and leave the
+        // caller's uninitialized values in place, which then get saved as the window geometry
+        *width = mWindowWidth;
+        *height = mWindowHeight;
+        *posX = SDL_WINDOWPOS_CENTERED;
+        *posY = SDL_WINDOWPOS_CENTERED;
+        return;
+    }
 #ifdef __APPLE__
     SDL_GetWindowSize(mWnd, static_cast<int*>((void*)width), static_cast<int*>((void*)height));
 #else

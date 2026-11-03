@@ -132,7 +132,11 @@ bool Context::InitLogging(spdlog::level::level_enum debugBuildLogLevel,
 
     try {
         // Setup Logging
+#ifdef SOH_LOW_MEMORY
+        spdlog::init_thread_pool(1024, 1); // each queued message is ~340 bytes, preallocated
+#else
         spdlog::init_thread_pool(8192, 1);
+#endif
         std::vector<spdlog::sink_ptr> sinks;
 
 #if (!defined(_WIN32)) || defined(_DEBUG)

@@ -16,6 +16,10 @@
 #elif __APPLE__
 #include <SDL2/SDL.h>
 #include <GL/glew.h>
+#elif defined(USE_GLES2)
+#include <SDL2/SDL.h>
+#include <GLES2/gl2.h>
+#include <GLES2/gl2ext.h>
 #elif USE_OPENGLES
 #include <SDL2/SDL.h>
 #include <GLES3/gl3.h>
@@ -106,11 +110,20 @@ class GfxRenderingAPIOGL final : public GfxRenderingAPI {
     ImTextureID GetTextureById(int id) override;
 
   private:
+#ifdef USE_GLES2
+    // GLES2 has no glBlitFramebuffer: copies are drawn as a textured quad
+    void BlitTexture(GLuint srcTex, uint32_t srcW, uint32_t srcH, int srcX0, int srcY0, int srcX1, int srcY1,
+                     GLuint dstFbo, uint32_t dstW, uint32_t dstH, int dstX0, int dstY0, int dstX1, int dstY1);
+    GLuint mBlitProgram = 0;
+    GLint mBlitTexLocation = -1;
+#endif
     void SetUniforms(ShaderProgram* prg) const;
     std::string BuildFsShader(const CCFeatures& cc_features);
     void SetPerDrawUniforms();
 
-    std::vector<TextureInfo> textures;
+    // Keyed by GL texture name: drivers such as PowerVR SGX hand out sparse, huge names, so a vector indexed by
+    // name grows to hundreds of MB
+    std::unordered_map<GLuint, TextureInfo> textures;
     GLuint mCurrentTextureIds[SHADER_MAX_TEXTURES] = {};
     GLuint mLastBoundTextures[SHADER_MAX_TEXTURES] = {};
     uint8_t mCurrentTile;
